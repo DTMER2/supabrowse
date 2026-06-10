@@ -8,13 +8,12 @@ struct ContentView: View {
             SidebarView()
                 .navigationSplitViewColumnWidth(min: 200, ideal: 240, max: 320)
         } detail: {
-            ZStack {
-                ForEach(store.openWebTabs) { tab in
+            Group {
+                if let selectedTabID = store.selectedTabID,
+                   let tab = store.webTab(for: selectedTabID) {
                     BrowserView(tab: tab)
-                        .opacity(store.selectedTabID == tab.id ? 1 : 0)
-                        .allowsHitTesting(store.selectedTabID == tab.id)
-                }
-                if store.selectedTabID == nil {
+                        .id(tab.id)
+                } else {
                     HomeView()
                 }
             }
