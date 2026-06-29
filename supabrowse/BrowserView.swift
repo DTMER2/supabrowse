@@ -16,7 +16,10 @@ struct BrowserView: View {
             Divider()
             WebViewRepresentable(webView: tab.webView)
         }
-        .onAppear { syncURL() }
+        .onAppear {
+            syncURL()
+            focusWebView()
+        }
         .onChange(of: tab.currentURL) { _, _ in
             if !isEditingURL { syncURL() }
         }
@@ -25,12 +28,22 @@ struct BrowserView: View {
     private func syncURL() {
         urlText = tab.currentURL?.absoluteString ?? ""
     }
+
+    /// 起動・タブ切り替え時に URL フォームへ自動でフォーカスが当たるのを防ぐため、
+    /// ウィンドウのファーストレスポンダを WebView に移す。
+    private func focusWebView() {
+        DispatchQueue.main.async {
+            guard let window = tab.webView.window else { return }
+            window.makeFirstResponder(tab.webView)
+        }
+    }
 }
 
 private struct BrowserToolbar: View {
     @ObservedObject var tab: WebTab
     @Binding var urlText: String
     @Binding var isEditing: Bool
+    @FocusState private var urlFieldFocused: Bool
 
     var body: some View {
         HStack(spacing: 8) {
@@ -63,11 +76,16 @@ private struct BrowserToolbar: View {
 
             TextField("URL", text: $urlText, onEditingChanged: { isEditing = $0 })
                 .textFieldStyle(.roundedBorder)
+                .focused($urlFieldFocused)
                 .onSubmit {
                     tab.load(urlString: urlText)
                 }
         }
         .padding(.horizontal, 12)
         .padding(.vertical, 8)
+        .onAppear {
+            // 起動・タブ切り替え時に URL フォームへ自動でフォーカスが当たるのを防ぐ。
+            urlFieldFocused = false
+        }
     }
 }

@@ -62,7 +62,12 @@ final class WebTab: ObservableObject, Identifiable {
 }
 
 @MainActor
-private final class BrowserUIDelegate: NSObject, WKUIDelegate {
+private final class BrowserUIDelegate: NSObject, WKUIDelegate, NSWindowDelegate {
+    /// window.open で開いたポップアップ。ARC で解放されないよう強参照で保持する。
+    private var popupWindows: [NSWindow: WKWebView] = [:]
+
+    // MARK: - ファイル選択（Finder）
+
     func webView(
         _ webView: WKWebView,
         runOpenPanelWith parameters: WKOpenPanelParameters,
@@ -83,6 +88,118 @@ private final class BrowserUIDelegate: NSObject, WKUIDelegate {
             panel.begin { response in
                 completionHandler(response == .OK ? panel.urls : nil)
             }
+        }
+    }
+
+    // MARK: - 新規ウィンドウ（window.open / target="_blank"）
+
+    func webView(
+        _ webView: WKWebView,
+        createWebViewWith configuration: WKWebViewConfiguration,
+        for navigationAction: WKNavigationAction,
+        windowFeatures: WKWindowFeatures
+    ) -> WKWebView? {
+        // 渡された configuration を使うことで、セッション（Cookie 等）を親と共有する。
+        let width = windowFeatures.width?.doubleValue ?? 1000
+        let height = windowFeatures.height?.doubleValue ?? 700
+        let rect = NSRect(x: 0, y: 0, width: width, height: height)
+
+        let popup = WKWebView(frame: rect, configuration: configuration)
+        popup.uiDelegate = self
+        popup.customUserAgent = webView.customUserAgent
+        popup.allowsBackForwardNavigationGestures = true
+
+        let window = NSWindow(
+            contentRect: rect,
+            styleMask: [.titled, .closable, .resizable, .miniaturizable],
+            backing: .buffered,
+            defer: false
+        )
+        window.isReleasedWhenClosed = false
+        window.delegate = self
+        window.contentView = popup
+        window.center()
+        window.makeKeyAndOrderFront(nil)
+
+        popupWindows[window] = popup
+
+        // URL を持つ通常の遷移は自分で読み込む（戻り値の WebView を返した時点で
+        // WebKit が読み込むケースもあるが、明示しておくと _blank リンクも確実に開く）。
+        if navigationAction.targetFrame == nil, navigationAction.request.url != nil {
+            popup.load(navigationAction.request)
+        }
+        return popup
+    }
+
+    func webViewDidClose(_ webView: WKWebView) {
+        guard let entry = popupWindows.first(where: { $0.value === webView }) else { return }
+        entry.key.close()
+    }
+
+    func windowWillClose(_ notification: Notification) {
+        guard let window = notification.object as? NSWindow else { return }
+        popupWindows.removeValue(forKey: window)
+    }
+
+    // MARK: - JavaScript ダイアログ（alert / confirm / prompt）
+
+    func webView(
+        _ webView: WKWebView,
+        runJavaScriptAlertPanelWithMessage message: String,
+        initiatedByFrame frame: WKFrameInfo,
+        completionHandler: @escaping () -> Void
+    ) {
+        let alert = NSAlert()
+        alert.messageText = message
+        alert.addButton(withTitle: "OK")
+        present(alert, on: webView) { _ in completionHandler() }
+    }
+
+    func webView(
+        _ webView: WKWebView,
+        runJavaScriptConfirmPanelWithMessage message: String,
+        initiatedByFrame frame: WKFrameInfo,
+        completionHandler: @escaping (Bool) -> Void
+    ) {
+        let alert = NSAlert()
+        alert.messageText = message
+        alert.addButton(withTitle: "OK")
+        alert.addButton(withTitle: "Cancel")
+        present(alert, on: webView) { response in
+            completionHandler(response == .alertFirstButtonReturn)
+        }
+    }
+
+    func webView(
+        _ webView: WKWebView,
+        runJavaScriptTextInputPanelWithPrompt prompt: String,
+        defaultText: String?,
+        initiatedByFrame frame: WKFrameInfo,
+        completionHandler: @escaping (String?) -> Void
+    ) {
+        let alert = NSAlert()
+        alert.messageText = prompt
+        alert.addButton(withTitle: "OK")
+        alert.addButton(withTitle: "Cancel")
+
+        let input = NSTextField(frame: NSRect(x: 0, y: 0, width: 280, height: 24))
+        input.stringValue = defaultText ?? ""
+        alert.accessoryView = input
+
+        present(alert, on: webView) { response in
+            completionHandler(response == .alertFirstButtonReturn ? input.stringValue : nil)
+        }
+    }
+
+    private func present(
+        _ alert: NSAlert,
+        on webView: WKWebView,
+        handler: @escaping (NSApplication.ModalResponse) -> Void
+    ) {
+        if let window = webView.window {
+            alert.beginSheetModal(for: window, completionHandler: handler)
+        } else {
+            handler(alert.runModal())
         }
     }
 }
